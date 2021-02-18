@@ -1,8 +1,15 @@
-use std::{io, path::{Path, PathBuf}};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 use tokio::{
     fs,
     io::AsyncReadExt,
-    sync::mpsc::{channel, Receiver, Sender},
+};
+
+use futures::{
+    channel::mpsc::{channel, Receiver, Sender},
+    SinkExt
 };
 
 use crate::error::Result;
@@ -18,9 +25,7 @@ pub struct Zipper<P> {
 impl<P> Zipper<P>
 where
     P: AsRef<Path> + Send + Sync + 'static,
-
 {
-    
     pub fn from_iter<I>(files: I) -> Self
     where
         I: Iterator<Item = P> + Send + 'static,
@@ -32,15 +37,17 @@ where
 
     async fn main_loop(
         mut files: Box<dyn Iterator<Item = P> + Send>,
-        sender: Sender<std::result::Result<Vec<u8>, io::Error>>,
+        mut sender: Sender<std::result::Result<Vec<u8>, io::Error>>,
     ) -> Result<()> {
         let mut pos: u64 = 0;
         let mut dir = Directory::new();
 
         macro_rules! send {
             ($data:ident) => {
+                {
                 pos += $data.len() as u64;
                 sender.send(Ok($data)).await.expect("receiver gone");
+                }
             };
         }
 
@@ -73,13 +80,13 @@ where
             dir.add_entry(file_header, desc, file_header_offset);
         }
         let directory_bytes = dir.finalize(pos)?;
-        send!(directory_bytes);
+        sender.send(Ok(directory_bytes)).await.expect("receiver gone");
 
         Ok(())
     }
 
     pub fn zipped_stream(self) -> Receiver<std::result::Result<Vec<u8>, io::Error>> {
-        let (s, r) = channel(64);
+        let (mut s, r) = channel(64);
 
         tokio::spawn(async move {
             let sender = s.clone();
@@ -93,7 +100,9 @@ where
 }
 
 impl Zipper<PathBuf> {
-    pub async fn from_directory(path: impl AsRef<Path>) -> std::result::Result<Zipper<PathBuf>, io::Error> {
+    pub async fn from_directory(
+        path: impl AsRef<Path>,
+    ) -> std::result::Result<Zipper<PathBuf>, io::Error> {
         let mut files = vec![];
         let mut dir_listing = fs::read_dir(path).await?;
         while let Some(entry) = dir_listing.next_entry().await? {
@@ -101,7 +110,7 @@ impl Zipper<PathBuf> {
                 files.push(entry.path())
             }
         }
-        
+
         Ok(Zipper::from_iter(files.into_iter()))
     }
 }
@@ -109,21 +118,22 @@ impl Zipper<PathBuf> {
 #[cfg(test)]
 mod tests {
 
-    use std::io::{Cursor, Read, Write};
-    use crate::error::Result;
     use super::Zipper;
+    use crate::error::Result;
+    use std::io::{Cursor, Read, Write};
+    use futures::StreamExt;
     use tokio::io::AsyncReadExt;
     use zip::ZipArchive;
     #[tokio::test]
-    async fn test_zip_stream() -> Result<()>{
+    async fn test_zip_stream() -> Result<()> {
         let zipper = Zipper::from_directory("src").await?;
         let mut stream = zipper.zipped_stream();
         let mut f = Cursor::new(Vec::<u8>::new());
-        while let Some(chunk) = stream.recv().await {
+        while let Some(chunk) = stream.next().await {
             f.write_all(&(chunk?)).unwrap();
         }
 
-        assert!(f.get_ref().len()>1000);
+        assert!(f.get_ref().len() > 1000);
 
         f.set_position(0);
 
@@ -131,19 +141,25 @@ mod tests {
         assert_eq!(zip.len(), 4);
         for i in 0..zip.len() {
             let mut file = zip.by_index(i).expect("entry error");
-            println!("Filename: {} {} {:?}", file.name(), file.size(), file.last_modified());
+            println!(
+                "Filename: {} {} {:?}",
+                file.name(),
+                file.size(),
+                file.last_modified()
+            );
             let mut content = vec![];
             file.read_to_end(&mut content).expect("read content error");
 
-            let mut tf = tokio::fs::File::open(file.name()).await.expect("cannot open file");
+            let mut tf = tokio::fs::File::open(file.name())
+                .await
+                .expect("cannot open file");
             let meta = tf.metadata().await.expect("cannot get metadata");
 
             assert_eq!(meta.len(), file.size());
             let mut tc = vec![];
             tf.read_to_end(&mut tc).await.expect("cannot read file");
             assert_eq!(tc, content);
-;        }
-
+        }
 
         Ok(())
     }
