@@ -1,19 +1,53 @@
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 use bytes::{BufMut, BytesMut};
 
 use crate::error::Result;
 use crate::{date::Timestamp, error::Error};
 
+const DIRECTORY_END_SIZE: u32 = 22;
+const FILE_HEADER_SIZE: u32 = 30;
+const DATA_DESCRIPTOR_SIZE: u32 = 16;
+const DIRECTORY_ENTRY_SIZE: u32 = 46;
+
 const LOCAL_FILE_HEADER_SIGNATURE: u32 = 0x04034b50;
 const CENTRAL_DIRECTORY_HEADER_SIGNATURE: u32 = 0x02014b50;
 const CENTRAL_DIRECTORY_END_SIGNATURE: u32 = 0x06054b50;
-const DATA_DESCRIPTOR_SIGNATURE: u32 = 0x08074b50;
+const DATA_DESCRIPTOR_SIGNATURE: u32 = 0x08074b;
 
 const MIN_VERSION: u16 = 20;
 const FLAGS: u16 = 0b0000_1000_0000_1000;
 const COMPRESS_STORE: u16 = 0;
 
+pub fn calc_size<P, I>(sizes: I) -> Result<u64>
+where
+    I: IntoIterator<Item = (P, u64)>,
+    P: AsRef<Path>,
+{
+    // let mut size: u64 = DIRECTORY_END_SIZE as u64;
+    // for (path, sz) in sizes.into_iter() {
+    //     size += (path_to_file_name(&path))?.len() as u64 + FILE_HEADER_SIZE as u64 + sz + DATA_DESCRIPTOR_SIZE as u64;
+    // }
+    // Ok(size)
+    sizes
+        .into_iter()
+        .try_fold(DIRECTORY_END_SIZE as u64, |total, (path, sz)| {
+            Ok(total
+                + FILE_HEADER_SIZE as u64
+                + 2 * path_to_file_name(&path)?.len() as u64
+                + sz
+                + DATA_DESCRIPTOR_SIZE as u64
+                + DIRECTORY_ENTRY_SIZE as u64)
+        })
+}
+
+fn path_to_file_name<P: AsRef<Path>>(path: &P) -> Result<Cow<'_, str>> {
+    Ok(path
+        .as_ref()
+        .file_name()
+        .ok_or(Error::InvalidPath)?
+        .to_string_lossy())
+}
 pub trait ToBytes {
     fn to_bytes(&self) -> Result<Vec<u8>>;
 }
@@ -25,13 +59,7 @@ pub struct FileHeader {
 
 impl FileHeader {
     pub fn new(path: impl AsRef<Path>, modified: impl Into<Timestamp>) -> Result<Self> {
-        let file_name = path
-            .as_ref()
-            .file_name()
-            .ok_or_else(|| Error::InvalidPath)?
-            .to_string_lossy()
-            .to_owned()
-            .to_string();
+        let file_name = path_to_file_name(&path)?.to_string();
         Ok(FileHeader {
             file_name,
             modified: modified.into(),
@@ -41,7 +69,7 @@ impl FileHeader {
 
 impl ToBytes for FileHeader {
     fn to_bytes(&self) -> Result<Vec<u8>> {
-        let mut h = BytesMut::with_capacity(30 + self.file_name.len());
+        let mut h = BytesMut::with_capacity(FILE_HEADER_SIZE as usize + self.file_name.len());
 
         // local file header signature
         h.put_u32_le(LOCAL_FILE_HEADER_SIGNATURE);
@@ -87,7 +115,7 @@ impl Descriptor {
 
 impl ToBytes for Descriptor {
     fn to_bytes(&self) -> Result<Vec<u8>> {
-        let mut d = BytesMut::with_capacity(16);
+        let mut d = BytesMut::with_capacity(DATA_DESCRIPTOR_SIZE as usize);
 
         if self.size > std::u32::MAX as u64 {
             return Err(Error::FileTooBig(self.size));
@@ -114,7 +142,7 @@ pub struct DirectoryEntry {
 
 impl DirectoryEntry {
     fn size(&self) -> u32 {
-        (self.header.file_name.len() + 46) as u32
+        (self.header.file_name.len() + DIRECTORY_END_SIZE as usize) as u32
     }
 }
 
@@ -236,7 +264,7 @@ impl Directory {
 impl ToBytes for Directory {
     fn to_bytes(&self) -> Result<Vec<u8>> {
         let num_files = self.entries.len();
-        let cap = self.entries.iter().map(|e| e.size()).sum::<u32>() + 22;
+        let cap = self.entries.iter().map(|e| e.size()).sum::<u32>() + DIRECTORY_END_SIZE;
         let mut d = BytesMut::with_capacity(cap as usize);
         for e in &self.entries {
             e.add_to_bytes(&mut d)?;
