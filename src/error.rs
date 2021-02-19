@@ -14,6 +14,8 @@ pub enum Error {
     ArchiveTooBig,
     #[error("IO error ${0}")]
     Io(#[from] io::Error),
+    #[error("Invalid path - does not contain file name")]
+    InvalidPath
 }
 
 impl From<Error> for io::Error {

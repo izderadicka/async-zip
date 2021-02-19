@@ -55,7 +55,7 @@ where
             let mut f = fs::File::open(&path).await?;
             let meta = f.metadata().await?;
             // send header
-            let file_header = FileHeader::new(path, meta.modified()?);
+            let file_header = FileHeader::new(path, meta.modified()?)?;
             let file_header_bytes = file_header.to_bytes()?;
             let file_header_offset = pos;
             send!(file_header_bytes);
@@ -120,13 +120,14 @@ mod tests {
 
     use super::Zipper;
     use crate::error::Result;
-    use std::io::{Cursor, Read, Write};
+    use std::{io::{Cursor, Read, Write}, path::PathBuf};
     use futures::StreamExt;
     use tokio::io::AsyncReadExt;
     use zip::ZipArchive;
     #[tokio::test]
     async fn test_zip_stream() -> Result<()> {
-        let zipper = Zipper::from_directory("src").await?;
+        let dir = PathBuf::from("src");
+        let zipper = Zipper::from_directory(&dir).await?;
         let mut stream = zipper.zipped_stream();
         let mut f = Cursor::new(Vec::<u8>::new());
         while let Some(chunk) = stream.next().await {
@@ -150,7 +151,7 @@ mod tests {
             let mut content = vec![];
             file.read_to_end(&mut content).expect("read content error");
 
-            let mut tf = tokio::fs::File::open(file.name())
+            let mut tf = tokio::fs::File::open(dir.join(file.name()))
                 .await
                 .expect("cannot open file");
             let meta = tf.metadata().await.expect("cannot get metadata");

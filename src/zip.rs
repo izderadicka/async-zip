@@ -24,17 +24,18 @@ pub struct FileHeader {
 }
 
 impl FileHeader {
-    pub fn new(path: impl AsRef<Path>, modified: impl Into<Timestamp>) -> Self {
+    pub fn new(path: impl AsRef<Path>, modified: impl Into<Timestamp>) -> Result<Self> {
         let file_name = path
             .as_ref()
-            .as_os_str()
+            .file_name()
+            .ok_or_else(|| Error::InvalidPath)?
             .to_string_lossy()
             .to_owned()
             .to_string();
-        FileHeader {
+        Ok(FileHeader {
             file_name,
             modified: modified.into(),
-        }
+        })
     }
 }
 
